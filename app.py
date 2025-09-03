@@ -36,11 +36,17 @@ def index():
     </html>
     """)
 
-@app.route("/location")
-def last_location_api():
-    return jsonify(last_location)
+@app.route("/location", methods=["POST"])
+def location():
+    global last_location
+    data = request.json
+    print("Datos recibidos:", data)  # ← así verás en la consola si llega algo
+    last_location = data
+    return jsonify({"status": "ok", "received": data})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
