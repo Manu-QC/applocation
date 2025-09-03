@@ -1,9 +1,29 @@
 <?php
 header("Content-Type: text/html; charset=UTF-8");
 
-// Archivo donde guardamos la última ubicación
-$filePath = __DIR__ . "/ultima_ubicacion.json"; // ✅ en la misma carpeta
+// 📍 Archivo donde guardamos la última ubicación
+$filePath = __DIR__ . "/ultima_ubicacion.json";
 
+// ✅ Si llega una petición POST (desde la app Android), guardamos la ubicación
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $lat = $_POST["lat"] ?? null;
+    $lon = $_POST["lon"] ?? null;
+
+    if ($lat && $lon) {
+        $data = [
+            "latitud" => $lat,
+            "longitud" => $lon,
+            "fecha" => date("Y-m-d H:i:s")
+        ];
+        file_put_contents($filePath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        echo "✅ Ubicación guardada correctamente";
+    } else {
+        echo "❌ Faltan parámetros (lat, lon)";
+    }
+    exit; // salimos aquí, no cargamos el HTML
+}
+
+// ✅ Si no es POST, cargamos la vista en HTML
 $lat = null;
 $lon = null;
 $fecha = null;
