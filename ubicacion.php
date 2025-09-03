@@ -77,11 +77,12 @@ if (file_exists($filePath)) {
                         map.setView([lat, lon]);
                     })
                     .catch(error => console.error("Error al actualizar:", error));
-            }, 200);
+            }, 1000);
         </script>
     <?php else: ?>
         <h2>❌ No se ha recibido ninguna ubicación todavía</h2>
     <?php endif; ?>
 </body>
 </html>
+
 
