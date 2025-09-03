@@ -3,12 +3,17 @@ header("Content-Type: text/html; charset=UTF-8");
 
 // Archivo donde guardamos la última ubicación
 $filePath = __DIR__ . "/ultima_ubicacion.json";
+$logPath  = __DIR__ . "/debug.log"; // archivo de depuración
 
 $lat = null;
 $lon = null;
 $fecha = null;
 
+// Si se recibe un POST desde la app
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    // Guardamos todo lo que llega para depurar
+    file_put_contents($logPath, "[" . date("Y-m-d H:i:s") . "] POST: " . print_r($_POST, true) . "\n", FILE_APPEND);
+
     if (isset($_POST['lat']) && isset($_POST['lon'])) {
         $lat = filter_var($_POST['lat'], FILTER_VALIDATE_FLOAT);
         $lon = filter_var($_POST['lon'], FILTER_VALIDATE_FLOAT);
@@ -20,12 +25,20 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $data = [
                 "latitud" => $lat,
                 "longitud" => $lon,
-                "fecha" => $fecha
+                "fecha"   => $fecha
             ];
-            file_put_contents($filePath, json_encode($data, JSON_PRETTY_PRINT));
+            if (file_put_contents($filePath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) === false) {
+                file_put_contents($logPath, "[" . date("Y-m-d H:i:s") . "] ERROR: No se pudo escribir en ultima_ubicacion.json\n", FILE_APPEND);
+            }
+        } else {
+            file_put_contents($logPath, "[" . date("Y-m-d H:i:s") . "] ERROR: Lat/Lon inválidos\n", FILE_APPEND);
         }
+    } else {
+        file_put_contents($logPath, "[" . date("Y-m-d H:i:s") . "] ERROR: POST sin lat/lon\n", FILE_APPEND);
     }
-} elseif (file_exists($filePath)) {
+}
+// Si no hay POST, intentamos leer la última ubicación guardada
+elseif (file_exists($filePath)) {
     $data = json_decode(file_get_contents($filePath), true);
     $lat = $data["latitud"];
     $lon = $data["longitud"];
