@@ -86,7 +86,7 @@ if (file_exists($filePath)) {
                         document.getElementById("coords").innerHTML =
                             "<strong>Latitud:</strong> " + lat + "<br>" +
                             "<strong>Longitud:</strong> " + lon + "<br>" +
-                            "<em>Fecha:</em> " + fecha + "<br><br>" +
+                            "<em>Fecha (hora local):</em> " + new Date().toLocaleString() + "<br><br>" +
                             "<strong>👤 Nombre:</strong> Manuel Eduardo Quispe Condori<br>" +
                             "<strong>🎓 Código:</strong> 200858<br>" +
                             "<strong>🏫 Universidad:</strong> UNSAAC";
@@ -106,3 +106,4 @@ if (file_exists($filePath)) {
     <?php endif; ?>
 </body>
 </html>
+
