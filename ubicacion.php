@@ -10,9 +10,9 @@ $fecha = null;
 
 if (file_exists($filePath)) {
     $data = json_decode(file_get_contents($filePath), true);
-    $lat = $data["latitud"];
-    $lon = $data["longitud"];
-    $fecha = $data["fecha"];
+    $lat = $data["latitud"] ?? null;
+    $lon = $data["longitud"] ?? null;
+    $fecha = $data["fecha"] ?? null;
 }
 ?>
 <!DOCTYPE html>
@@ -51,7 +51,7 @@ if (file_exists($filePath)) {
                 .bindPopup("Última ubicación<br>Lat: <?= $lat ?><br>Lon: <?= $lon ?>")
                 .openPopup();
 
-            // 🔄 Actualizar cada 3 segundos (puedes cambiar el tiempo aquí)
+            // 🔄 Actualizar cada 1 segundo
             setInterval(function() {
                 fetch("ultima_ubicacion.json?nocache=" + new Date().getTime())
                     .then(response => response.json())
@@ -59,6 +59,8 @@ if (file_exists($filePath)) {
                         var lat = data.latitud;
                         var lon = data.longitud;
                         var fecha = data.fecha;
+
+                        if (!lat || !lon) return;
 
                         // Actualizar texto
                         document.getElementById("coords").innerHTML =
@@ -73,7 +75,7 @@ if (file_exists($filePath)) {
                         marker.setLatLng([lat, lon])
                               .setPopupContent("Última ubicación<br>Lat: " + lat + "<br>Lon: " + lon);
 
-                        // Recentrar mapa (opcional: puedes quitar esta línea si no quieres que siga al marcador todo el rato)
+                        // Mantener el mapa centrado
                         map.setView([lat, lon]);
                     })
                     .catch(error => console.error("Error al actualizar:", error));
@@ -84,5 +86,3 @@ if (file_exists($filePath)) {
     <?php endif; ?>
 </body>
 </html>
-
-
