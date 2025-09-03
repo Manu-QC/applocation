@@ -3,42 +3,12 @@ header("Content-Type: text/html; charset=UTF-8");
 
 // Archivo donde guardamos la última ubicación
 $filePath = __DIR__ . "/ultima_ubicacion.json";
-$logPath  = __DIR__ . "/debug.log"; // archivo de depuración
 
 $lat = null;
 $lon = null;
 $fecha = null;
 
-// Si se recibe un POST desde la app
-if ($_SERVER["REQUEST_METHOD"] === "POST") {
-    // Guardamos todo lo que llega para depurar
-    file_put_contents($logPath, "[" . date("Y-m-d H:i:s") . "] POST: " . print_r($_POST, true) . "\n", FILE_APPEND);
-
-    if (isset($_POST['lat']) && isset($_POST['lon'])) {
-        $lat = filter_var($_POST['lat'], FILTER_VALIDATE_FLOAT);
-        $lon = filter_var($_POST['lon'], FILTER_VALIDATE_FLOAT);
-
-        if ($lat !== false && $lon !== false) {
-            $fecha = date("Y-m-d H:i:s");
-
-            // Guardar en JSON
-            $data = [
-                "latitud" => $lat,
-                "longitud" => $lon,
-                "fecha"   => $fecha
-            ];
-            if (file_put_contents($filePath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) === false) {
-                file_put_contents($logPath, "[" . date("Y-m-d H:i:s") . "] ERROR: No se pudo escribir en ultima_ubicacion.json\n", FILE_APPEND);
-            }
-        } else {
-            file_put_contents($logPath, "[" . date("Y-m-d H:i:s") . "] ERROR: Lat/Lon inválidos\n", FILE_APPEND);
-        }
-    } else {
-        file_put_contents($logPath, "[" . date("Y-m-d H:i:s") . "] ERROR: POST sin lat/lon\n", FILE_APPEND);
-    }
-}
-// Si no hay POST, intentamos leer la última ubicación guardada
-elseif (file_exists($filePath)) {
+if (file_exists($filePath)) {
     $data = json_decode(file_get_contents($filePath), true);
     $lat = $data["latitud"];
     $lon = $data["longitud"];
@@ -59,25 +29,55 @@ elseif (file_exists($filePath)) {
 <body>
     <?php if ($lat !== null && $lon !== null): ?>
         <h2>📍 Última ubicación recibida</h2>
-        <p><strong>Latitud:</strong> <?= htmlspecialchars($lat) ?></p>
-        <p><strong>Longitud:</strong> <?= htmlspecialchars($lon) ?></p>
-        <p><em>Fecha:</em> <?= htmlspecialchars($fecha) ?></p>
+        <p id="coords">
+            <strong>Latitud:</strong> <?= htmlspecialchars($lat) ?><br>
+            <strong>Longitud:</strong> <?= htmlspecialchars($lon) ?><br>
+            <em>Fecha:</em> <?= htmlspecialchars($fecha) ?><br><br>
+            <strong>👤 Nombre:</strong> Manuel Eduardo Quispe Condori<br>
+            <strong>🎓 Código:</strong> 200858<br>
+            <strong>🏫 Universidad:</strong> UNSAAC
+        </p>
 
         <div id="map"></div>
 
         <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
         <script>
             var map = L.map('map').setView([<?= $lat ?>, <?= $lon ?>], 15);
-
-            // Cargar mapa de OpenStreetMap
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '© OpenStreetMap contributors'
             }).addTo(map);
 
-            // Agregar marcador
-            L.marker([<?= $lat ?>, <?= $lon ?>]).addTo(map)
+            var marker = L.marker([<?= $lat ?>, <?= $lon ?>]).addTo(map)
                 .bindPopup("Última ubicación<br>Lat: <?= $lat ?><br>Lon: <?= $lon ?>")
                 .openPopup();
+
+            // 🔄 Actualizar cada 3 segundos (puedes cambiar el tiempo aquí)
+            setInterval(function() {
+                fetch("ultima_ubicacion.json?nocache=" + new Date().getTime())
+                    .then(response => response.json())
+                    .then(data => {
+                        var lat = data.latitud;
+                        var lon = data.longitud;
+                        var fecha = data.fecha;
+
+                        // Actualizar texto
+                        document.getElementById("coords").innerHTML =
+                            "<strong>Latitud:</strong> " + lat + "<br>" +
+                            "<strong>Longitud:</strong> " + lon + "<br>" +
+                            "<em>Fecha:</em> " + fecha + "<br><br>" +
+                            "<strong>👤 Nombre:</strong> Manuel Eduardo Quispe Condori<br>" +
+                            "<strong>🎓 Código:</strong> 200858<br>" +
+                            "<strong>🏫 Universidad:</strong> UNSAAC";
+
+                        // Mover marcador sin recrear el mapa
+                        marker.setLatLng([lat, lon])
+                              .setPopupContent("Última ubicación<br>Lat: " + lat + "<br>Lon: " + lon);
+
+                        // Recentrar mapa (opcional: puedes quitar esta línea si no quieres que siga al marcador todo el rato)
+                        map.setView([lat, lon]);
+                    })
+                    .catch(error => console.error("Error al actualizar:", error));
+            }, 3000);
         </script>
     <?php else: ?>
         <h2>❌ No se ha recibido ninguna ubicación todavía</h2>
