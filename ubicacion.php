@@ -2,7 +2,7 @@
 header("Content-Type: text/html; charset=UTF-8");
 
 // Archivo donde guardamos la última ubicación
-$filePath = __DIR__ . "/ultima_ubicacion.json";
+$filePath = __DIR__ . "../ultima_ubicacion.json";
 
 $lat = null;
 $lon = null;
@@ -86,3 +86,4 @@ if (file_exists($filePath)) {
     <?php endif; ?>
 </body>
 </html>
+
