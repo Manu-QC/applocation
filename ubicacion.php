@@ -1,46 +1,56 @@
 <?php
 header("Content-Type: text/html; charset=UTF-8");
 
-// 📍 Archivo donde guardamos todas las ubicaciones
 $filePath = __DIR__ . "/ubicaciones.json";
 
-// ✅ Máximo de usuarios permitidos
-$MAX_USUARIOS = 2;
+// 📏 Función para calcular distancia en metros (haversine)
+function distanciaMetros($lat1, $lon1, $lat2, $lon2) {
+    $R = 6371000;
+    $dLat = deg2rad($lat2 - $lat1);
+    $dLon = deg2rad($lon2 - $lon1);
+    $a = sin($dLat/2) * sin($dLat/2) +
+         cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
+         sin($dLon/2) * sin($dLon/2);
+    $c = 2 * atan2(sqrt($a), sqrt(1-$a));
+    return $R * $c;
+}
 
-// ✅ Si llega una petición POST (desde la app Android), guardamos la ubicación
+// ✅ Guardar ubicación cuando se recibe POST
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
-    $lat = $_POST["lat"] ?? null;
-    $lon = $_POST["lon"] ?? null;
-    $usuario = $_POST["usuario"] ?? "desconocido"; // ID del dispositivo
+    $lat = isset($_POST["lat"]) ? (float)$_POST["lat"] : null;
+    $lon = isset($_POST["lon"]) ? (float)$_POST["lon"] : null;
+    $usuario = $_POST["usuario"] ?? "desconocido";
 
     if ($lat && $lon) {
-        // Si ya existe archivo, lo leemos, sino creamos uno nuevo
         $data = file_exists($filePath) ? json_decode(file_get_contents($filePath), true) : [];
 
-        // 🚫 Limitar a máximo 2 usuarios
-        if (!isset($data[$usuario]) && count($data) >= $MAX_USUARIOS) {
-            echo "❌ Límite de $MAX_USUARIOS usuarios alcanzado";
-            exit;
-        }
-
-        // Inicializar historial para el usuario si no existe
         if (!isset($data[$usuario])) {
             $data[$usuario] = [];
         }
 
-        // Agregar nueva ubicación al historial
+        // 📏 Verificar coherencia con última posición
+        if (!empty($data[$usuario])) {
+            $ultimo = end($data[$usuario]);
+            $distancia = distanciaMetros($ultimo["latitud"], $ultimo["longitud"], $lat, $lon);
+
+            if ($distancia > 3) { // 👈 ahora solo se acepta cambio si es <= 1m
+                echo "⚠️ Movimiento incoherente mayor a 1m ignorado";
+                exit;
+            }
+        }
+
+        // Guardar nueva ubicación
         $data[$usuario][] = [
             "latitud" => $lat,
             "longitud" => $lon,
             "fecha" => date("Y-m-d H:i:s")
         ];
 
-        // Mantener solo las últimas 500 posiciones por usuario
+        // Mantener máximo 500 registros
         if (count($data[$usuario]) > 500) {
             $data[$usuario] = array_slice($data[$usuario], -500);
         }
 
-        // Guardamos en el archivo
         file_put_contents($filePath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
         echo "✅ Ubicación guardada de $usuario";
     } else {
@@ -49,7 +59,6 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     exit;
 }
 
-// ✅ Si no es POST, cargamos las ubicaciones
 $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath), true) : [];
 ?>
 <!DOCTYPE html>
@@ -59,16 +68,50 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
     <title>Ubicaciones en Tiempo Real</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin: 20px; }
-        #map { height: 400px; width: 100%; margin-top: 20px; border: 2px solid #333; }
-        .datos { margin-bottom: 15px; padding: 10px; border: 2px solid #555; display: inline-block; background: #f9f9f9; }
-        .info-usuarios { margin-top: 20px; text-align: left; display: inline-block; padding: 10px; border: 1px solid #aaa; background: #fafafa; }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            background: #f9f9f9;
+            color: #222;
+            text-align: center;
+        }
+        h2 { padding: 15px; color: #333; }
+        #map { height: 500px; width: 90%; margin: 20px auto; border: 2px solid #333; border-radius: 12px; }
+        .datos {
+            margin: 15px auto;
+            padding: 15px;
+            border: 2px solid #555;
+            border-radius: 10px;
+            background: #fff;
+            max-width: 400px;
+        }
+        .info-usuarios {
+            margin: 20px auto;
+            padding: 15px;
+            border: 1px solid #aaa;
+            border-radius: 8px;
+            background: #fff;
+            max-width: 600px;
+            text-align: left;
+        }
+        .botones { text-align: center; margin: 15px; }
+        .boton {
+            margin: 5px;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            color: #fff;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .boton:hover { transform: scale(1.1); }
     </style>
 </head>
 <body>
     <h2>📍 Ubicaciones en Tiempo Real</h2>
 
-    <!-- 👤 Tus datos personales siempre visibles -->
+    <!-- 👤 Datos del creador -->
     <div class="datos">
         <strong>👤 Nombre:</strong> Manuel Eduardo Quispe Condori<br>
         <strong>🎓 Código:</strong> 200858<br>
@@ -78,7 +121,9 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
     <?php if (!empty($ubicaciones)): ?>
         <div id="map"></div>
 
-        <!-- Info en texto de cada usuario -->
+        <!-- Botones dinámicos -->
+        <div class="botones" id="botones"></div>
+
         <div class="info-usuarios" id="infoUsuarios">
             <h3>📌 Últimas posiciones recibidas</h3>
             <p>Cargando...</p>
@@ -87,14 +132,18 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
         <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
         <script>
             var map = L.map('map').setView([0, 0], 2);
+
+            // 🔹 Mapa claro estándar
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '© OpenStreetMap contributors'
             }).addTo(map);
 
             var markers = {};
             var polylines = {};
-            var colores = ["red", "blue"]; // 🎨 Solo dos colores (máx 2 usuarios)
+            var colores = ["#ff4c4c", "#4cff4c", "#4c4cff", "#ffcc00", "#ff66ff", "#00ffff", "#ffa500", "#00ffcc"];
             var colorIndex = {};
+            var lineVisible = {};
+            var firstFit = true;
 
             function getColor(usuario) {
                 if (!colorIndex[usuario]) {
@@ -104,18 +153,27 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
                 return colorIndex[usuario];
             }
 
+            function toggleLinea(usuario) {
+                if (polylines[usuario]) {
+                    if (lineVisible[usuario]) {
+                        map.removeLayer(polylines[usuario]);
+                        lineVisible[usuario] = false;
+                    } else {
+                        polylines[usuario].addTo(map);
+                        lineVisible[usuario] = true;
+                    }
+                }
+            }
+
             function actualizarUbicaciones() {
                 fetch("ubicaciones.json?nocache=" + new Date().getTime())
                     .then(response => response.json())
                     .then(data => {
                         var bounds = [];
                         var infoHtml = "<h3>📌 Últimas posiciones recibidas</h3>";
+                        var botonesHtml = "";
 
-                        var count = 0;
                         for (var usuario in data) {
-                            if (count >= 2) break; // 🚫 Máximo 2 usuarios
-                            count++;
-
                             var historial = data[usuario];
                             if (historial.length === 0) continue;
 
@@ -125,13 +183,13 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
                             var fecha = ultimo.fecha;
                             var color = getColor(usuario);
 
-                            // Texto fijo con coordenadas y fecha de cada usuario
                             infoHtml += "<p><strong>👤 Usuario:</strong> " + usuario +
                                         "<br>🌍 Lat: " + lat +
                                         "<br>🌍 Lon: " + lon +
                                         "<br>⏰ Fecha: " + fecha + "</p>";
 
-                            // Crear o actualizar marcador
+                            botonesHtml += "<button class='boton' style='background:" + color + "' onclick=\"toggleLinea('" + usuario + "')\">👁 " + usuario + "</button>";
+
                             var popupText = "👤 Usuario: " + usuario + "<br>" +
                                             "Lat: " + lat + "<br>" +
                                             "Lon: " + lon + "<br>" +
@@ -143,29 +201,30 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
                                 markers[usuario].setLatLng([lat, lon]).setPopupContent(popupText);
                             }
 
-                            // Crear o actualizar polilínea
                             var coords = historial.map(p => [p.latitud, p.longitud]);
                             if (!polylines[usuario]) {
-                                polylines[usuario] = L.polyline(coords, {color: color, weight: 4}).addTo(map);
+                                polylines[usuario] = L.polyline(coords, {color: color, weight: 3}).addTo(map);
+                                lineVisible[usuario] = true;
                             } else {
                                 polylines[usuario].setLatLngs(coords);
+                                if (!lineVisible[usuario]) map.removeLayer(polylines[usuario]);
                             }
 
                             bounds.push([lat, lon]);
                         }
 
-                        // Mostrar la info en texto
                         document.getElementById("infoUsuarios").innerHTML = infoHtml;
+                        document.getElementById("botones").innerHTML = botonesHtml;
 
-                        // Ajustar mapa
-                        if (bounds.length > 0) {
+                        if (firstFit && bounds.length > 0) {
                             map.fitBounds(bounds);
+                            firstFit = false;
                         }
                     })
                     .catch(error => console.error("Error al actualizar:", error));
             }
 
-            setInterval(actualizarUbicaciones, 1000); // 🔄 cada segundo
+            setInterval(actualizarUbicaciones, 1000);
             actualizarUbicaciones();
         </script>
     <?php else: ?>
