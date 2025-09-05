@@ -47,7 +47,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $data[$usuario][] = [
             "latitud" => $lat,
             "longitud" => $lon,
-            "fecha" => date("Y-m-d H:i:s")
+            "fecha" => $_POST["hora"] ?? date("Y-m-d H:i:s")
         ];
 
         // Mantener máximo 500 registros por usuario
@@ -162,3 +162,4 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
     <?php endif; ?>
 </body>
 </html>
+
