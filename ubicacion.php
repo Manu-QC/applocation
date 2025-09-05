@@ -43,7 +43,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             }
         }
 
-        // Guardar nueva ubicación
+        // Guardar nueva ubicación (la fecha ya no importa, se ignora en el navegador)
         $data[$usuario][] = [
             "latitud" => $lat,
             "longitud" => $lon,
@@ -130,12 +130,15 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
                             if (!historial.length) continue;
 
                             var ultimo = historial[historial.length - 1];
-                            var lat = ultimo.latitud, lon = ultimo.longitud, fecha = ultimo.fecha, color = getColor(usuario);
+                            var lat = ultimo.latitud, lon = ultimo.longitud, color = getColor(usuario);
 
-                            infoHtml += `<p><strong>👤 Usuario:</strong> ${usuario}<br>🌍 Lat: ${lat}<br>🌍 Lon: ${lon}<br>⏰ Fecha: ${fecha}</p>`;
+                            // 🚀 Siempre usar la hora local del navegador
+                            var fechaLocal = new Date().toLocaleString();
+
+                            infoHtml += `<p><strong>👤 Usuario:</strong> ${usuario}<br>🌍 Lat: ${lat}<br>🌍 Lon: ${lon}<br>⏰ Fecha: ${fechaLocal}</p>`;
                             botonesHtml += `<button class='boton' style='background:${color}' onclick="toggleLinea('${usuario}')">👁 ${usuario}</button>`;
 
-                            var popupText = `👤 Usuario: ${usuario}<br>Lat: ${lat}<br>Lon: ${lon}<br>⏰ ${fecha}`;
+                            var popupText = `👤 Usuario: ${usuario}<br>Lat: ${lat}<br>Lon: ${lon}<br>⏰ ${fechaLocal}`;
                             if (!markers[usuario]) markers[usuario] = L.marker([lat, lon]).addTo(map).bindPopup(popupText);
                             else markers[usuario].setLatLng([lat, lon]).setPopupContent(popupText);
 
@@ -162,4 +165,3 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
     <?php endif; ?>
 </body>
 </html>
-
