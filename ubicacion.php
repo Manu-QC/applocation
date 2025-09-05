@@ -37,7 +37,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $distancia = distanciaMetros($ultimo["latitud"], $ultimo["longitud"], $lat, $lon);
 
             // 🔹 Ajustar límite para pruebas (antes 3m, ahora 300m)
-            if ($distancia > 2) { 
+            if ($distancia > 2.5) { 
                 echo "⚠️ Movimiento incoherente mayor a 300m ignorado";
                 exit;
             }
@@ -165,3 +165,4 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
     <?php endif; ?>
 </body>
 </html>
+
