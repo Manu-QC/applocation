@@ -21,6 +21,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $lat = (float) $_POST["lat"];
         $lon = (float) $_POST["lon"];
         $usuario = $_POST["usuario"] ?? "desconocido";
+        $horaNueva = $_POST["hora"] ?? date("Y-m-d H:i:s");
 
         // Registrar POST para depuración
         file_put_contents(__DIR__."/log.txt", date('Y-m-d H:i:s') . " POST=" . json_encode($_POST) . "\n", FILE_APPEND);
@@ -31,23 +32,31 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $data[$usuario] = [];
         }
 
-        // 📏 Verificar coherencia con última posición
+        // 📏 Verificar coherencia con velocidad máxima
         if (!empty($data[$usuario])) {
             $ultimo = end($data[$usuario]);
             $distancia = distanciaMetros($ultimo["latitud"], $ultimo["longitud"], $lat, $lon);
 
-            // 🔹 Ajustar límite para pruebas (antes 3m, ahora 300m)
-            if ($distancia > 2.5) { 
-                echo "⚠️ Movimiento incoherente mayor a 300m ignorado";
+            $t1 = strtotime($ultimo["fecha"]);
+            $t2 = strtotime($horaNueva);
+            $deltaT = max(1, $t2 - $t1); // evitar división por cero
+
+            $velocidad = $distancia / $deltaT; // m/s
+
+            // 🚦 límite razonable (ej: 40 m/s ≈ 144 km/h)
+            $velocidadMax = 40;
+
+            if ($velocidad > $velocidadMax) {
+                echo "⚠️ Movimiento incoherente ignorado (".$velocidad." m/s)";
                 exit;
             }
         }
 
-        // Guardar nueva ubicación (la fecha ya no importa, se ignora en el navegador)
+        // Guardar nueva ubicación
         $data[$usuario][] = [
             "latitud" => $lat,
             "longitud" => $lon,
-            "fecha" => $_POST["hora"] ?? date("Y-m-d H:i:s")
+            "fecha" => $horaNueva
         ];
 
         // Mantener máximo 500 registros por usuario
@@ -165,4 +174,3 @@ $ubicaciones = file_exists($filePath) ? json_decode(file_get_contents($filePath)
     <?php endif; ?>
 </body>
 </html>
-
