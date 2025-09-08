@@ -4,7 +4,7 @@ header("Content-Type: text/html; charset=UTF-8");
 $filePath = __DIR__ . "/ubicaciones.json";
 $logPath  = __DIR__ . "/log.txt";
 
-// 📏 Función para calcular distancia en metros (haversine)
+// 📏 Distancia Haversine
 function distanciaMetros($lat1, $lon1, $lat2, $lon2) {
     $R = 6371000;
     $dLat = deg2rad($lat2 - $lat1);
@@ -16,7 +16,7 @@ function distanciaMetros($lat1, $lon1, $lat2, $lon2) {
     return $R * $c;
 }
 
-// Leer JSON seguro
+// JSON seguro
 function readJsonFile($path) {
     if (!file_exists($path)) return [];
     $raw = @file_get_contents($path);
@@ -26,7 +26,6 @@ function readJsonFile($path) {
     return $data;
 }
 
-// Escribir JSON atómico
 function writeJsonFileAtomic($path, $data) {
     $tmp = $path . '.tmp';
     $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
@@ -42,7 +41,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $lon = (float) $_POST["lon"];
         $usuario = trim($_POST["usuario"] ?? "desconocido");
 
-        // Hora preferida: del dispositivo
+        // Hora desde dispositivo
         if (isset($_POST['hora_ms'])) {
             $hora_ms = (int) $_POST['hora_ms'];
         } elseif (isset($_POST['hora'])) {
@@ -51,57 +50,45 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $hora_ms = (int) round(microtime(true) * 1000);
         }
 
-        // accuracy opcional
         $accuracy = isset($_POST['accuracy']) ? (float) $_POST['accuracy'] : null;
-
-        // Registrar POST para debug
-        @file_put_contents($logPath, date('Y-m-d H:i:s') . " POST=" . json_encode($_POST) . PHP_EOL, FILE_APPEND);
 
         $data = readJsonFile($filePath);
         if (!isset($data[$usuario]) || !is_array($data[$usuario])) {
             $data[$usuario] = [];
         }
 
-        // 🚦 Parámetros más estables
-        $minMove = 10.0;       // ignorar movimientos <10m
-        $maxAccuracy = 10.0;   // ignorar puntos con precisión peor a 10m
-        $maxVelocidad = 3.0;   // descartar >3 m/s (≈ 10.8 km/h)
+        // 🚦 Filtros
+        $minMove      = 3.0;   // movimientos <3m ignorados
+        $maxAccuracy  = 3.0;   // descartar precisión peor a 3m
+        $maxVelocidad = 5.0;   // descartar >5 m/s
+        $minDeltaT    = 5.0;   // intervalo mínimo 5s
 
-        // ❌ Descartar por baja precisión
         if ($accuracy !== null && $accuracy > $maxAccuracy) {
-            echo "⚠️ Punto descartado por baja precisión ({$accuracy}m)";
-            exit;
+            exit("⚠️ Punto descartado (precisión {$accuracy}m)");
         }
 
         if (!empty($data[$usuario])) {
             $ultimo = end($data[$usuario]);
-
             $lastLat = (float) ($ultimo['latitud'] ?? 0);
             $lastLon = (float) ($ultimo['longitud'] ?? 0);
-            $lastFechaMs = isset($ultimo['fecha_ms']) ? (int) $ultimo['fecha_ms'] :
-                           (isset($ultimo['fecha']) ? (int) (strtotime($ultimo['fecha']) * 1000) : $hora_ms - 1000);
+            $lastFechaMs = isset($ultimo['fecha_ms']) ? (int) $ultimo['fecha_ms'] : $hora_ms - 1000;
 
             $distancia = distanciaMetros($lastLat, $lastLon, $lat, $lon);
             $deltaT = max(0.1, ($hora_ms - $lastFechaMs) / 1000.0);
             $velocidad = $distancia / $deltaT;
 
-            @file_put_contents($logPath, date('Y-m-d H:i:s') .
-                " INFO usuario=$usuario distancia={$distancia}m deltaT={$deltaT}s velocidad={$velocidad}m/s accuracy={$accuracy}" . PHP_EOL, FILE_APPEND);
-
-            // ❌ Ignorar movimientos muy pequeños
-            if ($distancia < $minMove) {
-                echo "ℹ️ Movimiento menor a {$minMove}m ignorado";
-                exit;
+            if ($deltaT < $minDeltaT) {
+                exit("⏳ Intervalo menor a {$minDeltaT}s ignorado");
             }
-
-            // ❌ Ignorar velocidades irreales
+            if ($distancia < $minMove) {
+                exit("ℹ️ Movimiento menor a {$minMove}m ignorado");
+            }
             if ($velocidad > $maxVelocidad) {
-                echo "⚠️ Movimiento incoherente ignorado (" . round($velocidad,2) . " m/s)";
-                exit;
+                exit("⚠️ Movimiento incoherente ({$velocidad} m/s)");
             }
         }
 
-        // ✅ Guardar nueva ubicación
+        // ✅ Guardar
         $nuevoPunto = [
             "latitud"  => $lat,
             "longitud" => $lon,
@@ -110,32 +97,27 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             "fecha"    => gmdate("Y-m-d H:i:s", (int)($hora_ms / 1000))
         ];
 
-        // Filtro suavizado: promedio de últimos 2 + nuevo
-        if (count($data[$usuario]) >= 2) {
-            $p1 = $data[$usuario][count($data[$usuario]) - 1];
-            $p2 = $data[$usuario][count($data[$usuario]) - 2];
-            $nuevoPunto["latitud"]  = ($lat + $p1["latitud"] + $p2["latitud"]) / 3.0;
-            $nuevoPunto["longitud"] = ($lon + $p1["longitud"] + $p2["longitud"]) / 3.0;
+        // 🔧 Filtro de suavizado (EMA)
+        if (!empty($data[$usuario])) {
+            $alpha = 0.4;
+            $ultimo = end($data[$usuario]);
+            $nuevoPunto["latitud"]  = $alpha * $lat + (1-$alpha) * $ultimo["latitud"];
+            $nuevoPunto["longitud"] = $alpha * $lon + (1-$alpha) * $ultimo["longitud"];
         }
 
         $data[$usuario][] = $nuevoPunto;
 
-        if (count($data[$usuario]) > 500) {
-            $data[$usuario] = array_slice($data[$usuario], -500);
+        if (count($data[$usuario]) > 1000000) {
+            $data[$usuario] = array_slice($data[$usuario], -1000000);
         }
 
-        if (writeJsonFileAtomic($filePath, $data)) {
-            echo "✅ Ubicación guardada de $usuario";
-        } else {
-            echo "❌ Error al guardar ubicación";
-        }
+        writeJsonFileAtomic($filePath, $data);
+        exit("✅ Ubicación guardada de $usuario");
     } else {
-        echo "❌ Faltan parámetros (lat, lon)";
+        exit("❌ Faltan parámetros (lat, lon)");
     }
-    exit;
 }
 
-// Leer ubicaciones para mostrar en el mapa
 $ubicaciones = readJsonFile($filePath);
 ?>
 <!DOCTYPE html>
@@ -154,6 +136,7 @@ $ubicaciones = readJsonFile($filePath);
         .botones { text-align: center; margin: 15px; }
         .boton { margin: 5px; padding: 10px 15px; border: none; border-radius: 8px; font-weight: bold; color: #fff; cursor: pointer; transition: transform 0.2s; }
         .boton:hover { transform: scale(1.1); }
+        .filtros { margin: 20px; }
     </style>
 </head>
 <body>
@@ -163,6 +146,15 @@ $ubicaciones = readJsonFile($filePath);
         <strong>👤 Nombre:</strong> Manuel Eduardo Quispe Condori<br>
         <strong>🎓 Código:</strong> 200858<br>
         <strong>🏫 Universidad:</strong> UNSAAC
+    </div>
+
+    <div class="filtros">
+        <label>Desde (fecha): <input type="date" id="fechaDesde"></label>
+        <label>Hora: <input type="time" id="horaDesde"></label><br><br>
+        <label>Hasta (fecha): <input type="date" id="fechaHasta"></label>
+        <label>Hora: <input type="time" id="horaHasta"></label><br><br>
+        <button onclick="actualizarUbicaciones()">📌 Filtrar</button>
+        <button onclick="limpiarFiltros()">📌 Mostrar Todo</button>
     </div>
 
     <?php if (!empty($ubicaciones)): ?>
@@ -178,20 +170,40 @@ $ubicaciones = readJsonFile($filePath);
             }).addTo(map);
 
             var markers = {}, polylines = {}, colorIndex = {}, lineVisible = {};
-            var colores = ["#ff4c4c", "#4cff4c", "#4c4cff", "#ffcc00", "#ff66ff", "#00ffff", "#ffa500", "#00ffcc", "#8A2BE2", "#FF4500"];
+            var colores = ["#ff4c4c","#4cff4c","#4c4cff","#ffcc00","#ff66ff","#00ffff","#ffa500","#00ffcc","#8A2BE2","#FF4500"];
             var firstFit = true;
+            var fechaDesde = null, fechaHasta = null;
 
-            function getColor(usuario) {
-                if (!(usuario in colorIndex)) {
+            function limpiarFiltros() {
+                document.getElementById("fechaDesde").value = "";
+                document.getElementById("horaDesde").value = "";
+                document.getElementById("fechaHasta").value = "";
+                document.getElementById("horaHasta").value = "";
+                fechaDesde = null; fechaHasta = null;
+                actualizarUbicaciones();
+            }
+
+            function combinarFechaHora(f,h){
+                if(!f) return null;
+                let fecha = new Date(f);
+                if(h){
+                    let partes = h.split(":");
+                    fecha.setHours(partes[0], partes[1]);
+                }
+                return fecha.getTime();
+            }
+
+            function getColor(usuario){
+                if(!(usuario in colorIndex)){
                     var idx = Object.keys(colorIndex).length;
                     colorIndex[usuario] = idx;
                 }
                 return colores[colorIndex[usuario] % colores.length];
             }
 
-            function toggleLinea(usuario) {
-                if (polylines[usuario]) {
-                    if (lineVisible[usuario]) {
+            function toggleLinea(usuario){
+                if(polylines[usuario]){
+                    if(lineVisible[usuario]){
                         map.removeLayer(polylines[usuario]);
                         lineVisible[usuario] = false;
                     } else {
@@ -201,67 +213,76 @@ $ubicaciones = readJsonFile($filePath);
                 }
             }
 
-            function actualizarUbicaciones() {
-                fetch("ubicaciones.json?nocache=" + new Date().getTime())
-                    .then(r => r.json())
-                    .then(data => {
-                        var bounds = [], infoHtml = "<h3>📌 Últimas posiciones recibidas</h3>", botonesHtml = "";
+            function actualizarUbicaciones(){
+                fechaDesde = combinarFechaHora(
+                    document.getElementById("fechaDesde").value,
+                    document.getElementById("horaDesde").value
+                );
+                fechaHasta = combinarFechaHora(
+                    document.getElementById("fechaHasta").value,
+                    document.getElementById("horaHasta").value
+                );
 
-                        for (var usuario in data) {
-                            var historial = data[usuario];
-                            if (!historial || historial.length === 0) continue;
+                fetch("ubicaciones.json?nocache="+new Date().getTime())
+                .then(r=>r.json())
+                .then(data=>{
+                    var bounds=[], infoHtml="<h3>📌 Posiciones filtradas</h3>", botonesHtml="";
+                    for(var usuario in data){
+                        var historial=data[usuario];
+                        if(!historial||historial.length===0) continue;
 
-                            var ultimo = historial[historial.length - 1];
-                            var lat = parseFloat(ultimo.latitud), lon = parseFloat(ultimo.longitud);
-                            var color = getColor(usuario);
+                        var filtrados=historial.filter(function(p){
+                            var t=p.fecha_ms?parseInt(p.fecha_ms):Date.parse(p.fecha);
+                            if(fechaDesde && t<fechaDesde) return false;
+                            if(fechaHasta && t>fechaHasta) return false;
+                            return true;
+                        });
+                        if(filtrados.length===0) continue;
 
-                            var fechaLocal = new Date().toLocaleString();
+                        var ultimo=filtrados[filtrados.length-1];
+                        var lat=parseFloat(ultimo.latitud), lon=parseFloat(ultimo.longitud);
+                        var color=getColor(usuario);
+                        var fechaLocal=new Date(parseInt(ultimo.fecha_ms)).toLocaleString();
 
-                            infoHtml += "<p><strong>👤 Usuario:</strong> " + usuario +
-                                        "<br>🌍 Lat: " + lat +
-                                        "<br>🌍 Lon: " + lon +
-                                        (ultimo.accuracy ? ("<br>📏 Error: " + ultimo.accuracy + " m") : "") +
-                                        "<br>⏰ Fecha: " + fechaLocal + "</p>";
+                        infoHtml+="<p><strong>👤 Usuario:</strong> "+usuario+
+                            "<br>🌍 Lat: "+lat+
+                            "<br>🌍 Lon: "+lon+
+                            (ultimo.accuracy?("<br>📏 Error: "+ultimo.accuracy+" m"):"")+
+                            "<br>⏰ Fecha: "+fechaLocal+"</p>";
 
-                            botonesHtml += "<button class='boton' style='background:" + color + "' onclick=\"toggleLinea('" + usuario + "')\">👁 " + usuario + "</button>";
+                        botonesHtml+="<button class='boton' style='background:"+color+"' onclick=\"toggleLinea('"+usuario+"')\">👁 "+usuario+"</button>";
 
-                            var popupText = "👤 Usuario: " + usuario + "<br>" +
-                                            "Lat: " + lat + "<br>" +
-                                            "Lon: " + lon + "<br>" +
-                                            (ultimo.accuracy ? ("Error: " + ultimo.accuracy + " m<br>") : "") +
-                                            "⏰ " + fechaLocal;
+                        var popupText="👤 Usuario: "+usuario+"<br>"+
+                            "Lat: "+lat+"<br>"+
+                            "Lon: "+lon+"<br>"+
+                            (ultimo.accuracy?("Error: "+ultimo.accuracy+" m<br>"):"")+
+                            "⏰ "+fechaLocal;
 
-                            if (!markers[usuario]) {
-                                markers[usuario] = L.marker([lat, lon], {title: usuario}).addTo(map).bindPopup(popupText);
-                            } else {
-                                markers[usuario].setLatLng([lat, lon]).setPopupContent(popupText);
-                            }
-
-                            var coords = historial.map(function(p){ return [parseFloat(p.latitud), parseFloat(p.longitud)]; });
-
-                            if (!polylines[usuario]) {
-                                polylines[usuario] = L.polyline(coords, {color: color, weight:3}).addTo(map);
-                                lineVisible[usuario] = true;
-                            } else {
-                                polylines[usuario].setLatLngs(coords);
-                                if (!lineVisible[usuario]) map.removeLayer(polylines[usuario]);
-                            }
-
-                            bounds.push([lat, lon]);
+                        if(!markers[usuario]){
+                            markers[usuario]=L.marker([lat,lon],{title:usuario}).addTo(map).bindPopup(popupText);
+                        } else {
+                            markers[usuario].setLatLng([lat,lon]).setPopupContent(popupText);
                         }
 
-                        document.getElementById("infoUsuarios").innerHTML = infoHtml;
-                        document.getElementById("botones").innerHTML = botonesHtml;
-
-                        if (firstFit && bounds.length) {
-                            try { map.fitBounds(bounds); } catch(e) {}
-                            firstFit = false;
+                        var coords=filtrados.map(function(p){return [parseFloat(p.latitud),parseFloat(p.longitud)];});
+                        if(!polylines[usuario]){
+                            polylines[usuario]=L.polyline(coords,{color:color,weight:3}).addTo(map);
+                            lineVisible[usuario]=true;
+                        } else {
+                            polylines[usuario].setLatLngs(coords);
+                            if(!lineVisible[usuario]) map.removeLayer(polylines[usuario]);
                         }
-                    })
-                    .catch(err => console.error("Error al actualizar:", err));
+                        bounds.push([lat,lon]);
+                    }
+                    document.getElementById("infoUsuarios").innerHTML=infoHtml;
+                    document.getElementById("botones").innerHTML=botonesHtml;
+                    if(firstFit&&bounds.length){
+                        try{map.fitBounds(bounds);}catch(e){}
+                        firstFit=false;
+                    }
+                });
             }
-
-            setInterval(actualizarUbicaciones, 2000); // menos frecuente para estabilidad
+            setInterval(actualizarUbicaciones,5000);
             actualizarUbicaciones();
         </script>
     <?php else: ?>
