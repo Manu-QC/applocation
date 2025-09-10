@@ -1,22 +1,7 @@
 <?php
-header("Content-Type: text/html; charset=UTF-8");
-
 $filePath = __DIR__ . "/ubicaciones.json";
-$logPath  = __DIR__ . "/log.txt";
 
-// 📏 Distancia Haversine
-function distanciaMetros($lat1, $lon1, $lat2, $lon2) {
-    $R = 6371000;
-    $dLat = deg2rad($lat2 - $lat1);
-    $dLon = deg2rad($lon2 - $lon1);
-    $a = sin($dLat/2) * sin($dLat/2) +
-         cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
-         sin($dLon/2) * sin($dLon/2);
-    $c = 2 * atan2(sqrt($a), sqrt(1-$a));
-    return $R * $c;
-}
-
-// JSON seguro
+/* --- Funciones auxiliares --- */
 function readJsonFile($path) {
     if (!file_exists($path)) return [];
     $raw = @file_get_contents($path);
@@ -25,268 +10,207 @@ function readJsonFile($path) {
     if (!is_array($data)) return [];
     return $data;
 }
-
-function writeJsonFileAtomic($path, $data) {
-    $tmp = $path . '.tmp';
-    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-    if ($json === false) return false;
-    if (file_put_contents($tmp, $json, LOCK_EX) === false) return false;
-    return rename($tmp, $path);
+function saveJsonFile($path, $data) {
+    return file_put_contents(
+        $path,
+        json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)
+    );
 }
 
-// 📌 Guardar ubicación
-if ($_SERVER["REQUEST_METHOD"] === "POST") {
-    if (isset($_POST["lat"], $_POST["lon"])) {
-        $lat = (float) $_POST["lat"];
-        $lon = (float) $_POST["lon"];
-        $usuario = trim($_POST["usuario"] ?? "desconocido");
+/* --- API para la app --- */
+$method = $_SERVER["REQUEST_METHOD"];
 
-        // Hora desde dispositivo
-        if (isset($_POST['hora_ms'])) {
-            $hora_ms = (int) $_POST['hora_ms'];
-        } elseif (isset($_POST['hora'])) {
-            $hora_ms = (int) (strtotime($_POST['hora']) * 1000);
-        } else {
-            $hora_ms = (int) round(microtime(true) * 1000);
-        }
-
-        $accuracy = isset($_POST['accuracy']) ? (float) $_POST['accuracy'] : null;
-
-        $data = readJsonFile($filePath);
-        if (!isset($data[$usuario]) || !is_array($data[$usuario])) {
-            $data[$usuario] = [];
-        }
-
-        // 🚦 Filtros
-        $minMove      = 3.0;   // movimientos <3m ignorados
-        $maxAccuracy  = 3.0;   // descartar precisión peor a 3m
-        $maxVelocidad = 5.0;   // descartar >5 m/s
-        $minDeltaT    = 5.0;   // intervalo mínimo 5s
-
-        if ($accuracy !== null && $accuracy > $maxAccuracy) {
-            exit("⚠️ Punto descartado (precisión {$accuracy}m)");
-        }
-
-        if (!empty($data[$usuario])) {
-            $ultimo = end($data[$usuario]);
-            $lastLat = (float) ($ultimo['latitud'] ?? 0);
-            $lastLon = (float) ($ultimo['longitud'] ?? 0);
-            $lastFechaMs = isset($ultimo['fecha_ms']) ? (int) $ultimo['fecha_ms'] : $hora_ms - 1000;
-
-            $distancia = distanciaMetros($lastLat, $lastLon, $lat, $lon);
-            $deltaT = max(0.1, ($hora_ms - $lastFechaMs) / 1000.0);
-            $velocidad = $distancia / $deltaT;
-
-            if ($deltaT < $minDeltaT) {
-                exit("⏳ Intervalo menor a {$minDeltaT}s ignorado");
-            }
-            if ($distancia < $minMove) {
-                exit("ℹ️ Movimiento menor a {$minMove}m ignorado");
-            }
-            if ($velocidad > $maxVelocidad) {
-                exit("⚠️ Movimiento incoherente ({$velocidad} m/s)");
-            }
-        }
-
-        // ✅ Guardar
-        $nuevoPunto = [
-            "latitud"  => $lat,
-            "longitud" => $lon,
-            "accuracy" => $accuracy,
-            "fecha_ms" => $hora_ms,
-            "fecha"    => gmdate("Y-m-d H:i:s", (int)($hora_ms / 1000))
-        ];
-
-        // 🔧 Filtro de suavizado (EMA)
-        if (!empty($data[$usuario])) {
-            $alpha = 0.4;
-            $ultimo = end($data[$usuario]);
-            $nuevoPunto["latitud"]  = $alpha * $lat + (1-$alpha) * $ultimo["latitud"];
-            $nuevoPunto["longitud"] = $alpha * $lon + (1-$alpha) * $ultimo["longitud"];
-        }
-
-        $data[$usuario][] = $nuevoPunto;
-
-        if (count($data[$usuario]) > 1000000) {
-            $data[$usuario] = array_slice($data[$usuario], -1000000);
-        }
-
-        writeJsonFileAtomic($filePath, $data);
-        exit("✅ Ubicación guardada de $usuario");
-    } else {
-        exit("❌ Faltan parámetros (lat, lon)");
+if ($method === "POST") {
+    // Detectar si llega como JSON o como form-data
+    $raw = file_get_contents("php://input");
+    $json = json_decode($raw, true);
+    if (!$json && isset($_POST["data"])) {
+        $json = json_decode($_POST["data"], true);
     }
+
+    if (!$json || !isset($json["deviceId"])) {
+        http_response_code(400);
+        echo json_encode(["status" => "error", "msg" => "Falta deviceId o JSON inválido"]);
+        exit;
+    }
+
+    $ubicaciones = readJsonFile($filePath);
+    $id = $json["deviceId"];
+    if (!isset($ubicaciones[$id])) $ubicaciones[$id] = [];
+
+    // Asegurar timestamps legibles
+    $json["fecha_ms"] = $json["fecha_ms"] ?? round(microtime(true) * 1000);
+    $json["fecha"] = date("Y-m-d H:i:s");
+
+    // Guardar
+    $ubicaciones[$id][] = $json;
+
+    // Mantener solo últimos 500 registros
+    if (count($ubicaciones[$id]) > 500) {
+        $ubicaciones[$id] = array_slice($ubicaciones[$id], -500);
+    }
+
+    saveJsonFile($filePath, $ubicaciones);
+    echo json_encode(["status" => "ok", "msg" => "Ubicación guardada"]);
+    exit;
 }
 
+if ($method === "DELETE") {
+    saveJsonFile($filePath, []);
+    echo json_encode(["status" => "ok", "msg" => "Historial borrado"]);
+    exit;
+}
+
+/* --- Vista web --- */
 $ubicaciones = readJsonFile($filePath);
 ?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <title>Ubicaciones en Tiempo Real</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; background: #f9f9f9; color: #222; text-align: center; }
-        h2 { padding: 15px; color: #333; }
-        #map { height: 500px; width: 90%; margin: 20px auto; border: 2px solid #333; border-radius: 12px; }
-        .datos, .info-usuarios { margin: 15px auto; padding: 15px; border-radius: 10px; background: #fff; max-width: 600px; }
-        .datos { border: 2px solid #555; max-width: 400px; }
-        .info-usuarios { border: 1px solid #aaa; text-align: left; }
-        .botones { text-align: center; margin: 15px; }
-        .boton { margin: 5px; padding: 10px 15px; border: none; border-radius: 8px; font-weight: bold; color: #fff; cursor: pointer; transition: transform 0.2s; }
-        .boton:hover { transform: scale(1.1); }
-        .filtros { margin: 20px; }
-    </style>
+<meta charset="UTF-8">
+<title>🌌 Panel Futurista de Ubicaciones</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    body { font-family:"Segoe UI",sans-serif; margin:0; background:radial-gradient(circle at top,#0f2027,#203a43,#2c5364); color:#eee; display:flex; flex-direction:column; height:100vh; }
+    h2 { text-align:center; padding:15px; color:#00e5ff; text-shadow:0 0 8px #0ff; margin:0; }
+    .container { display:flex; flex:1; }
+    #map { height:100%; width:75%; border-radius:12px; box-shadow:0 0 15px #00e5ff88; }
+    .sidebar { width:25%; background:#111; overflow-y:auto; padding:15px; box-shadow:0 0 10px #00e5ff55; }
+    .boton { margin:5px; padding:8px 12px; border:none; border-radius:8px; font-weight:bold; cursor:pointer; transition:transform .2s, box-shadow .2s; font-size:14px; }
+    .boton:hover { transform:scale(1.05); box-shadow:0 0 8px #0ff; }
+    .azul { background:#007bff; color:#fff; } .verde { background:#28a745; color:#fff; } .rojo { background:#dc3545; color:#fff; }
+    .filtros { margin-bottom:15px; display:flex; flex-direction:column; gap:8px; }
+    .filtros input { padding:5px; border-radius:6px; border:1px solid #444; background:#222; color:#eee; width:100%; }
+    .usuario-card { border:1px solid #00e5ff55; padding:10px; border-radius:8px; margin:10px 0; background:#1a1a1a; text-align:left; box-shadow:0 0 5px #00e5ff33; font-size:14px; }
+    canvas { background:#111; border-radius:10px; padding:10px; margin-top:10px; }
+</style>
 </head>
 <body>
-    <h2>📍 Ubicaciones en Tiempo Real</h2>
+<h2>🌌 Panel Futurista de Ubicaciones y Sensores</h2>
 
-    <div class="datos">
-        <strong>👤 Nombre:</strong> Manuel Eduardo Quispe Condori<br>
-        <strong>🎓 Código:</strong> 200858<br>
-        <strong>🏫 Universidad:</strong> UNSAAC
+<div class="container">
+    <div id="map"></div>
+    <div class="sidebar">
+        <div class="filtros">
+            <label>Desde: <input type="datetime-local" id="fechaInicio"></label>
+            <label>Hasta: <input type="datetime-local" id="fechaFin"></label>
+            <button class="boton azul" onclick="filtrarDatos()">🔍 Filtrar</button>
+            <button class="boton verde" onclick="resetFiltros()">♻ Ver Todo</button>
+            <button class="boton rojo" onclick="borrarTodo()">🗑 Borrar Todo</button>
+        </div>
+        <h3>📊 Gráfico de actividad (pasos por hora)</h3>
+        <canvas id="chartActividad" height="120"></canvas>
+        <div id="infoUsuarios"><h3>📌 Últimas posiciones</h3><p>Cargando...</p></div>
     </div>
+</div>
 
-    <div class="filtros">
-        <label>Desde (fecha): <input type="date" id="fechaDesde"></label>
-        <label>Hora: <input type="time" id="horaDesde"></label><br><br>
-        <label>Hasta (fecha): <input type="date" id="fechaHasta"></label>
-        <label>Hora: <input type="time" id="horaHasta"></label><br><br>
-        <button onclick="actualizarUbicaciones()">📌 Filtrar</button>
-        <button onclick="limpiarFiltros()">📌 Mostrar Todo</button>
-    </div>
+<?php if (!empty($ubicaciones)): ?>
+<script>
+var map=L.map('map').setView([0,0],2);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
 
-    <?php if (!empty($ubicaciones)): ?>
-        <div id="map"></div>
-        <div class="botones" id="botones"></div>
-        <div class="info-usuarios" id="infoUsuarios"><h3>📌 Últimas posiciones recibidas</h3><p>Cargando...</p></div>
+var markers={}, polylines={}, datosGlobal={};
+var colores=["#00e5ff","#ff4081","#00ff7f","#ffa500","#ff1493","#8a2be2"];
 
-        <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-        <script>
-            var map = L.map('map').setView([0, 0], 2);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '© OpenStreetMap contributors'
-            }).addTo(map);
+function borrarTodo(){
+    if(confirm("¿Seguro que deseas borrar todo el historial?")){
+        fetch("<?php echo basename(__FILE__); ?>",{method:"DELETE"}).then(()=>location.reload());
+    }
+}
 
-            var markers = {}, polylines = {}, colorIndex = {}, lineVisible = {};
-            var colores = ["#ff4c4c","#4cff4c","#4c4cff","#ffcc00","#ff66ff","#00ffff","#ffa500","#00ffcc","#8A2BE2","#FF4500"];
-            var firstFit = true;
-            var fechaDesde = null, fechaHasta = null;
+function actualizarUbicaciones(){
+    return fetch("ubicaciones.json?nocache="+Date.now())
+    .then(r=>r.json()).then(data=>{
+        datosGlobal=data; renderizar(data);
+    });
+}
 
-            function limpiarFiltros() {
-                document.getElementById("fechaDesde").value = "";
-                document.getElementById("horaDesde").value = "";
-                document.getElementById("fechaHasta").value = "";
-                document.getElementById("horaHasta").value = "";
-                fechaDesde = null; fechaHasta = null;
-                actualizarUbicaciones();
-            }
+function renderizar(data){
+    var infoHtml="", actividadHoras={};
+    var fechaIni=document.getElementById("fechaInicio").value;
+    var fechaFin=document.getElementById("fechaFin").value;
+    var tIni=fechaIni? new Date(fechaIni).getTime():null;
+    var tFin=fechaFin? new Date(fechaFin).getTime():null;
 
-            function combinarFechaHora(f,h){
-                if(!f) return null;
-                let fecha = new Date(f);
-                if(h){
-                    let partes = h.split(":");
-                    fecha.setHours(partes[0], partes[1]);
-                }
-                return fecha.getTime();
-            }
+    for(var usuario in data){
+        var historial=data[usuario]; if(!historial) continue;
+        var filtrados=historial.filter(p=>{
+            var t=parseInt(p.fecha_ms);
+            if(tIni && t<tIni) return false;
+            if(tFin && t>tFin) return false;
+            return true;
+        });
+        if(filtrados.length===0) continue;
 
-            function getColor(usuario){
-                if(!(usuario in colorIndex)){
-                    var idx = Object.keys(colorIndex).length;
-                    colorIndex[usuario] = idx;
-                }
-                return colores[colorIndex[usuario] % colores.length];
-            }
+        var ultimo=filtrados[filtrados.length-1];
+        var lat=parseFloat(ultimo.latitud||ultimo.gpsLat), lon=parseFloat(ultimo.longitud||ultimo.gpsLon);
+        var fechaLocal=new Date(parseInt(ultimo.fecha_ms)).toLocaleString();
 
-            function toggleLinea(usuario){
-                if(polylines[usuario]){
-                    if(lineVisible[usuario]){
-                        map.removeLayer(polylines[usuario]);
-                        lineVisible[usuario] = false;
-                    } else {
-                        polylines[usuario].addTo(map);
-                        lineVisible[usuario] = true;
-                    }
-                }
-            }
+        var popupText=`👤 ${usuario}<br>
+        🌍 Lat:${lat}<br>🌍 Lon:${lon}<br>
+        ⏰ ${fechaLocal}<br>
+        📏 Precisión:${(ultimo.accuracy||"?")} m<br>
+        🚶 Pasos:${(ultimo.steps||0)}<br>
+        📱 ${(ultimo.fabricante||"")} ${(ultimo.modelo||"")} (Android ${(ultimo.android||"")})<br>
+        ⚡ Accel:[${ultimo.accelX},${ultimo.accelY},${ultimo.accelZ}]<br>
+        🧭 Azimut:${ultimo.azimut} Pitch:${ultimo.pitch} Roll:${ultimo.roll}`;
 
-            function actualizarUbicaciones(){
-                fechaDesde = combinarFechaHora(
-                    document.getElementById("fechaDesde").value,
-                    document.getElementById("horaDesde").value
-                );
-                fechaHasta = combinarFechaHora(
-                    document.getElementById("fechaHasta").value,
-                    document.getElementById("horaHasta").value
-                );
+        if(!markers[usuario]){
+            var color=colores[Object.keys(markers).length%colores.length];
+            markers[usuario]=L.marker([lat,lon],{title:usuario}).addTo(map).bindPopup(popupText);
+            polylines[usuario]=L.polyline([], {color:color, weight:3}).addTo(map);
+        } else {
+            markers[usuario].setLatLng([lat,lon]).setPopupContent(popupText);
+        }
+        polylines[usuario].setLatLngs(filtrados.map(p=>[parseFloat(p.latitud||p.gpsLat),parseFloat(p.longitud||p.gpsLon)]));
 
-                fetch("ubicaciones.json?nocache="+new Date().getTime())
-                .then(r=>r.json())
-                .then(data=>{
-                    var bounds=[], infoHtml="<h3>📌 Posiciones filtradas</h3>", botonesHtml="";
-                    for(var usuario in data){
-                        var historial=data[usuario];
-                        if(!historial||historial.length===0) continue;
+        filtrados.forEach(p=>{
+            var hora=new Date(parseInt(p.fecha_ms)).getHours();
+            actividadHoras[hora]=(actividadHoras[hora]||0)+(p.steps||0);
+        });
 
-                        var filtrados=historial.filter(function(p){
-                            var t=p.fecha_ms?parseInt(p.fecha_ms):Date.parse(p.fecha);
-                            if(fechaDesde && t<fechaDesde) return false;
-                            if(fechaHasta && t>fechaHasta) return false;
-                            return true;
-                        });
-                        if(filtrados.length===0) continue;
+        infoHtml+=`<div class="usuario-card">
+            <strong>👤 Usuario:</strong> ${usuario}<br>
+            🌍 Lat:${lat} Lon:${lon}<br>
+            🚶 Pasos:${ultimo.steps||0}<br>
+            ⚡ Acelerómetro:X:${ultimo.accelX} Y:${ultimo.accelY} Z:${ultimo.accelZ}<br>
+            ⏰ ${fechaLocal}<br>
+            <button class="boton azul" onclick="centrarUsuario('${usuario}')">🎯 Centrar</button>
+        </div>`;
+    }
+    document.getElementById("infoUsuarios").innerHTML=infoHtml;
+    renderChart(actividadHoras);
+}
 
-                        var ultimo=filtrados[filtrados.length-1];
-                        var lat=parseFloat(ultimo.latitud), lon=parseFloat(ultimo.longitud);
-                        var color=getColor(usuario);
-                        var fechaLocal=new Date(parseInt(ultimo.fecha_ms)).toLocaleString();
+function centrarUsuario(usuario){
+    if(markers[usuario]){
+        map.setView(markers[usuario].getLatLng(),15);
+        markers[usuario].openPopup();
+    }
+}
 
-                        infoHtml+="<p><strong>👤 Usuario:</strong> "+usuario+
-                            "<br>🌍 Lat: "+lat+
-                            "<br>🌍 Lon: "+lon+
-                            (ultimo.accuracy?("<br>📏 Error: "+ultimo.accuracy+" m"):"")+
-                            "<br>⏰ Fecha: "+fechaLocal+"</p>";
+function renderChart(actividad){
+    var ctx=document.getElementById("chartActividad").getContext("2d");
+    var horas=Array.from({length:24},(_,i)=>i);
+    var valores=horas.map(h=>actividad[h]||0);
+    if(window.grafico) window.grafico.destroy();
+    window.grafico=new Chart(ctx,{
+        type:"bar",
+        data:{ labels:horas.map(h=>h+":00"), datasets:[{label:"Pasos",data:valores,backgroundColor:"#00e5ff"}]},
+        options:{scales:{x:{ticks:{color:"#eee"}},y:{ticks:{color:"#eee"}}}}
+    });
+}
 
-                        botonesHtml+="<button class='boton' style='background:"+color+"' onclick=\"toggleLinea('"+usuario+"')\">👁 "+usuario+"</button>";
+function filtrarDatos(){ renderizar(datosGlobal); }
+function resetFiltros(){ document.getElementById("fechaInicio").value=""; document.getElementById("fechaFin").value=""; renderizar(datosGlobal); }
 
-                        var popupText="👤 Usuario: "+usuario+"<br>"+
-                            "Lat: "+lat+"<br>"+
-                            "Lon: "+lon+"<br>"+
-                            (ultimo.accuracy?("Error: "+ultimo.accuracy+" m<br>"):"")+
-                            "⏰ "+fechaLocal;
-
-                        if(!markers[usuario]){
-                            markers[usuario]=L.marker([lat,lon],{title:usuario}).addTo(map).bindPopup(popupText);
-                        } else {
-                            markers[usuario].setLatLng([lat,lon]).setPopupContent(popupText);
-                        }
-
-                        var coords=filtrados.map(function(p){return [parseFloat(p.latitud),parseFloat(p.longitud)];});
-                        if(!polylines[usuario]){
-                            polylines[usuario]=L.polyline(coords,{color:color,weight:3}).addTo(map);
-                            lineVisible[usuario]=true;
-                        } else {
-                            polylines[usuario].setLatLngs(coords);
-                            if(!lineVisible[usuario]) map.removeLayer(polylines[usuario]);
-                        }
-                        bounds.push([lat,lon]);
-                    }
-                    document.getElementById("infoUsuarios").innerHTML=infoHtml;
-                    document.getElementById("botones").innerHTML=botonesHtml;
-                    if(firstFit&&bounds.length){
-                        try{map.fitBounds(bounds);}catch(e){}
-                        firstFit=false;
-                    }
-                });
-            }
-            setInterval(actualizarUbicaciones,5000);
-            actualizarUbicaciones();
-        </script>
-    <?php else: ?>
-        <h3>❌ No se ha recibido ninguna ubicación todavía</h3>
-    <?php endif; ?>
+setInterval(actualizarUbicaciones,5000);
+actualizarUbicaciones();
+</script>
+<?php else: ?>
+<h3 style="text-align:center">❌ No se ha recibido ninguna ubicación todavía</h3>
+<?php endif; ?>
 </body>
 </html>
