@@ -10,6 +10,7 @@ function readJsonFile($path) {
     if (!is_array($data)) return [];
     return $data;
 }
+
 function saveJsonFile($path, $data) {
     return file_put_contents(
         $path,
@@ -21,12 +22,9 @@ function saveJsonFile($path, $data) {
 $method = $_SERVER["REQUEST_METHOD"];
 
 if ($method === "POST") {
-    // Detectar si llega como JSON o como form-data
     $raw = file_get_contents("php://input");
     $json = json_decode($raw, true);
-    if (!$json && isset($_POST["data"])) {
-        $json = json_decode($_POST["data"], true);
-    }
+    if (!$json && isset($_POST["data"])) $json = json_decode($_POST["data"], true);
 
     if (!$json || !isset($json["deviceId"])) {
         http_response_code(400);
@@ -38,14 +36,16 @@ if ($method === "POST") {
     $id = $json["deviceId"];
     if (!isset($ubicaciones[$id])) $ubicaciones[$id] = [];
 
-    // Asegurar timestamps legibles
+    // Normalizar coordenadas
+    if (isset($json["gpsLat"])) $json["latitud"] = $json["gpsLat"];
+    if (isset($json["gpsLon"])) $json["longitud"] = $json["gpsLon"];
+
     $json["fecha_ms"] = $json["fecha_ms"] ?? round(microtime(true) * 1000);
     $json["fecha"] = date("Y-m-d H:i:s");
 
-    // Guardar
     $ubicaciones[$id][] = $json;
 
-    // Mantener solo últimos 500 registros
+    // Mantener últimos 500 registros
     if (count($ubicaciones[$id]) > 500) {
         $ubicaciones[$id] = array_slice($ubicaciones[$id], -500);
     }
@@ -108,11 +108,11 @@ $ubicaciones = readJsonFile($filePath);
 
 <?php if (!empty($ubicaciones)): ?>
 <script>
-var map=L.map('map').setView([0,0],2);
+var map = L.map('map').setView([0,0],2);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
 
-var markers={}, polylines={}, datosGlobal={};
-var colores=["#00e5ff","#ff4081","#00ff7f","#ffa500","#ff1493","#8a2be2"];
+var markers = {}, polylines = {}, datosGlobal = {};
+var colores = ["#00e5ff","#ff4081","#00ff7f","#ffa500","#ff1493","#8a2be2"];
 
 function borrarTodo(){
     if(confirm("¿Seguro que deseas borrar todo el historial?")){
@@ -129,24 +129,26 @@ function actualizarUbicaciones(){
 
 function renderizar(data){
     var infoHtml="", actividadHoras={};
-    var fechaIni=document.getElementById("fechaInicio").value;
-    var fechaFin=document.getElementById("fechaFin").value;
-    var tIni=fechaIni? new Date(fechaIni).getTime():null;
-    var tFin=fechaFin? new Date(fechaFin).getTime():null;
+    var fechaIni = document.getElementById("fechaInicio").value;
+    var fechaFin = document.getElementById("fechaFin").value;
+    var tIni = fechaIni? new Date(fechaIni).getTime():null;
+    var tFin = fechaFin? new Date(fechaFin).getTime():null;
 
     for(var usuario in data){
-        var historial=data[usuario]; if(!historial) continue;
-        var filtrados=historial.filter(p=>{
-            var t=parseInt(p.fecha_ms);
+        var historial = data[usuario]; if(!historial) continue;
+        var filtrados = historial.filter(p=>{
+            var t = parseInt(p.fecha_ms);
             if(tIni && t<tIni) return false;
             if(tFin && t>tFin) return false;
             return true;
         });
         if(filtrados.length===0) continue;
 
-        var ultimo=filtrados[filtrados.length-1];
-        var lat=parseFloat(ultimo.latitud||ultimo.gpsLat), lon=parseFloat(ultimo.longitud||ultimo.gpsLon);
-        var fechaLocal=new Date(parseInt(ultimo.fecha_ms)).toLocaleString();
+        var ultimo = filtrados[filtrados.length-1];
+        // Normalizar coordenadas en JS también
+        var lat = parseFloat(ultimo.latitud ?? ultimo.gpsLat ?? 0);
+        var lon = parseFloat(ultimo.longitud ?? ultimo.gpsLon ?? 0);
+        var fechaLocal = new Date(parseInt(ultimo.fecha_ms)).toLocaleString();
 
         var popupText=`👤 ${usuario}<br>
         🌍 Lat:${lat}<br>🌍 Lon:${lon}<br>
@@ -158,20 +160,23 @@ function renderizar(data){
         🧭 Azimut:${ultimo.azimut} Pitch:${ultimo.pitch} Roll:${ultimo.roll}`;
 
         if(!markers[usuario]){
-            var color=colores[Object.keys(markers).length%colores.length];
-            markers[usuario]=L.marker([lat,lon],{title:usuario}).addTo(map).bindPopup(popupText);
-            polylines[usuario]=L.polyline([], {color:color, weight:3}).addTo(map);
+            var color = colores[Object.keys(markers).length % colores.length];
+            markers[usuario] = L.marker([lat,lon],{title:usuario}).addTo(map).bindPopup(popupText);
+            polylines[usuario] = L.polyline([], {color:color, weight:3}).addTo(map);
         } else {
             markers[usuario].setLatLng([lat,lon]).setPopupContent(popupText);
         }
-        polylines[usuario].setLatLngs(filtrados.map(p=>[parseFloat(p.latitud||p.gpsLat),parseFloat(p.longitud||p.gpsLon)]));
+        polylines[usuario].setLatLngs(filtrados.map(p=>[
+            parseFloat(p.latitud ?? p.gpsLat ?? 0),
+            parseFloat(p.longitud ?? p.gpsLon ?? 0)
+        ]));
 
         filtrados.forEach(p=>{
-            var hora=new Date(parseInt(p.fecha_ms)).getHours();
-            actividadHoras[hora]=(actividadHoras[hora]||0)+(p.steps||0);
+            var hora = new Date(parseInt(p.fecha_ms)).getHours();
+            actividadHoras[hora] = (actividadHoras[hora]||0) + (p.steps||0);
         });
 
-        infoHtml+=`<div class="usuario-card">
+        infoHtml += `<div class="usuario-card">
             <strong>👤 Usuario:</strong> ${usuario}<br>
             🌍 Lat:${lat} Lon:${lon}<br>
             🚶 Pasos:${ultimo.steps||0}<br>
@@ -180,7 +185,8 @@ function renderizar(data){
             <button class="boton azul" onclick="centrarUsuario('${usuario}')">🎯 Centrar</button>
         </div>`;
     }
-    document.getElementById("infoUsuarios").innerHTML=infoHtml;
+
+    document.getElementById("infoUsuarios").innerHTML = infoHtml;
     renderChart(actividadHoras);
 }
 
@@ -192,11 +198,11 @@ function centrarUsuario(usuario){
 }
 
 function renderChart(actividad){
-    var ctx=document.getElementById("chartActividad").getContext("2d");
-    var horas=Array.from({length:24},(_,i)=>i);
-    var valores=horas.map(h=>actividad[h]||0);
+    var ctx = document.getElementById("chartActividad").getContext("2d");
+    var horas = Array.from({length:24},(_,i)=>i);
+    var valores = horas.map(h=>actividad[h]||0);
     if(window.grafico) window.grafico.destroy();
-    window.grafico=new Chart(ctx,{
+    window.grafico = new Chart(ctx,{
         type:"bar",
         data:{ labels:horas.map(h=>h+":00"), datasets:[{label:"Pasos",data:valores,backgroundColor:"#00e5ff"}]},
         options:{scales:{x:{ticks:{color:"#eee"}},y:{ticks:{color:"#eee"}}}}
